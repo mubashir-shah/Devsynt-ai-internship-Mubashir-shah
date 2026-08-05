@@ -1,0 +1,400 @@
+{
+  "name": "SlotWise - Telegram Booking Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "slotwise-telegram-a7k9m2",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -64,
+        -16
+      ],
+      "id": "d2dbfbb7-2983-40d5-b20e-9e7172386796",
+      "name": "Webhook",
+      "webhookId": "b6fd4408-914d-47f6-8500-0675a25bc3d9"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify({\n  method: \"sendMessage\",\n  chat_id: Number(\n    $(\"Booking Conversation State\").first().json.chat_id\n  ),\n  text: String(\n    $(\"Booking Conversation State\").first().json.reply_text\n  )\n}) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        976,
+        16
+      ],
+      "id": "fea03635-2d98-4bdc-8d79-4da4c61e626f",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "8e5dc057-be69-4b2d-ba80-98924111a0db",
+              "name": "chat_id",
+              "value": "={{ $json.body.message.chat.id }}",
+              "type": "number"
+            },
+            {
+              "id": "1633bcec-3a3e-4eed-90c7-f95e9d4cc766",
+              "name": "user_id",
+              "value": "={{ $json.body.message.from.id }}",
+              "type": "number"
+            },
+            {
+              "id": "80ca3781-f908-4945-81ee-596133bfad43",
+              "name": "username",
+              "value": "={{ $json.body.message.from.username || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "773e90b4-abf5-4876-993b-0e6fff6aaa2b",
+              "name": "first_name",
+              "value": "={{ $json.body.message.from.first_name || 'Guest' }}",
+              "type": "string"
+            },
+            {
+              "id": "7c266409-cbed-43aa-a4a0-cab3663386dd",
+              "name": "message_text",
+              "value": "={{ $json.body.message.text || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "c64ba06b-7094-47b1-a028-dc999ce610d3",
+              "name": "received_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        96,
+        -16
+      ],
+      "id": "f405015c-8b74-4055-a4fe-39c4bde0f492",
+      "name": "Normalize Telegram Input"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $(\"Normalize Telegram Input\").item.json;\n\nlet classifierResult = '';\n\ntry {\n  const classifierData =\n    $(\"Classify Off-Script Message\").item.json;\n\n  classifierResult = String(\n    classifierData.text ||\n    classifierData.output ||\n    classifierData.response ||\n    classifierData.content ||\n    ''\n  )\n    .trim()\n    .toUpperCase();\n} catch (error) {\n  classifierResult = '';\n}\n\nconst store = $getWorkflowStaticData('global');\n\nif (!store.slotwiseSessions) {\n  store.slotwiseSessions = {};\n}\n\nconst chatKey = String(input.chat_id);\nconst originalText = String(input.message_text || '').trim();\nconst text = originalText.toLowerCase();\n\nlet session = store.slotwiseSessions[chatKey] || {\n  stage: 'awaiting_booking_type',\n  booking_type: '',\n  service: '',\n  preferred_time: '',\n  selected_slot: '',\n};\n\nconst mainMenu =\n  `Welcome to SlotWise, ${input.first_name || 'Guest'}!\\n\\n` +\n  `What would you like to book?\\n\\n` +\n  `1. Restaurant Table\\n` +\n  `2. Parlour Appointment\\n\\n` +\n  `Reply with 1 or 2.`;\n\nlet replyText = '';\n\nlet shouldLogBooking = false;\nlet bookingId = '';\n\nlet shouldLogHandoff = false;\nlet handoffId = '';\nlet handoffReason = '';\n\nconst resetCommands = [\n  '/start',\n  'start',\n  '/reset',\n  'reset',\n  '/restart',\n  'restart',\n  '/menu',\n  'menu',\n];\n\nconst explicitHandoffPattern =\n  /\\b(price|prices|pricing|expensive|discount|negotiate|negotiation|complaint|complain|refund|angry|manager|human|staff|team|representative|customer support|speak to someone|talk to someone)\\b/i;\n\nconst explicitHandoff =\n  explicitHandoffPattern.test(originalText);\n\nconst llmHandoff =\n  classifierResult.includes('HANDOFF');\n\nconst timePattern =\n  /\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|morning|afternoon|evening|night|\\d{1,2}(:\\d{2})?\\s*(am|pm))\\b/i;\n\nconst looksLikeTiming =\n  timePattern.test(originalText);\n\nfunction createHandoffReply(reason) {\n  shouldLogHandoff = true;\n  handoffId = `HF-${Date.now()}-${input.chat_id}`;\n  handoffReason = reason;\n\n  return (\n    `I could not handle this request automatically.\\n\\n` +\n    `Let me connect you with our team. Someone will assist you soon.`\n  );\n}\n\n/*\n|--------------------------------------------------------------------------\n| Start or reset\n|--------------------------------------------------------------------------\n*/\n\nif (resetCommands.includes(text)) {\n  session = {\n    stage: 'awaiting_booking_type',\n    booking_type: '',\n    service: '',\n    preferred_time: '',\n    selected_slot: '',\n  };\n\n  replyText = mainMenu;\n}\n\n/*\n|--------------------------------------------------------------------------\n| Booking type\n|--------------------------------------------------------------------------\n*/\n\nelse if (session.stage === 'awaiting_booking_type') {\n  const restaurantInputs = [\n    '1',\n    'restaurant',\n    'table',\n    'restaurant table',\n    'book table',\n  ];\n\n  const parlourInputs = [\n    '2',\n    'parlour',\n    'salon',\n    'appointment',\n    'parlour appointment',\n  ];\n\n  if (restaurantInputs.includes(text)) {\n    session.booking_type = 'Restaurant Table';\n    session.stage = 'awaiting_service';\n\n    replyText =\n      `Restaurant booking selected.\\n\\n` +\n      `Please choose the table type:\\n\\n` +\n      `1. Table for 2\\n` +\n      `2. Table for 4\\n` +\n      `3. Birthday / Special Occasion\\n\\n` +\n      `Reply with 1, 2, or 3.`;\n  }\n\n  else if (parlourInputs.includes(text)) {\n    session.booking_type = 'Parlour Appointment';\n    session.stage = 'awaiting_service';\n\n    replyText =\n      `Parlour appointment selected.\\n\\n` +\n      `Please choose a service:\\n\\n` +\n      `1. Haircut\\n` +\n      `2. Facial\\n` +\n      `3. Manicure\\n\\n` +\n      `Reply with 1, 2, or 3.`;\n  }\n\n  else if (explicitHandoff || llmHandoff) {\n    replyText = createHandoffReply(\n      explicitHandoff\n        ? 'Complaint, pricing, or human-support request'\n        : 'Off-script message detected by Groq'\n    );\n  }\n\n  else {\n    replyText =\n      `I could not understand your selection.\\n\\n` +\n      `Please reply with:\\n` +\n      `1 for Restaurant Table\\n` +\n      `2 for Parlour Appointment`;\n  }\n}\n\n/*\n|--------------------------------------------------------------------------\n| Service or table type\n|--------------------------------------------------------------------------\n*/\n\nelse if (session.stage === 'awaiting_service') {\n  let selectedService = '';\n\n  if (session.booking_type === 'Restaurant Table') {\n    const restaurantServices = {\n      '1': 'Table for 2',\n      '2': 'Table for 4',\n      '3': 'Birthday / Special Occasion',\n      'table for 2': 'Table for 2',\n      'table for 4': 'Table for 4',\n      'birthday': 'Birthday / Special Occasion',\n      'special occasion': 'Birthday / Special Occasion',\n    };\n\n    selectedService = restaurantServices[text] || '';\n  }\n\n  else if (session.booking_type === 'Parlour Appointment') {\n    const parlourServices = {\n      '1': 'Haircut',\n      '2': 'Facial',\n      '3': 'Manicure',\n      'haircut': 'Haircut',\n      'facial': 'Facial',\n      'manicure': 'Manicure',\n    };\n\n    selectedService = parlourServices[text] || '';\n  }\n\n  if (selectedService) {\n    session.service = selectedService;\n    session.stage = 'awaiting_timing';\n\n    replyText =\n      `You selected: ${selectedService}\\n\\n` +\n      `What day and approximate time would you prefer?\\n\\n` +\n      `Example: Friday at 7 PM`;\n  }\n\n  else if (explicitHandoff || llmHandoff) {\n    replyText = createHandoffReply(\n      explicitHandoff\n        ? 'Complaint, pricing, or human-support request'\n        : 'Off-script message detected by Groq'\n    );\n  }\n\n  else if (session.booking_type === 'Restaurant Table') {\n    replyText =\n      `Please choose a valid table type:\\n\\n` +\n      `1. Table for 2\\n` +\n      `2. Table for 4\\n` +\n      `3. Birthday / Special Occasion`;\n  }\n\n  else {\n    replyText =\n      `Please choose a valid service:\\n\\n` +\n      `1. Haircut\\n` +\n      `2. Facial\\n` +\n      `3. Manicure`;\n  }\n}\n\n/*\n|--------------------------------------------------------------------------\n| Preferred timing\n|--------------------------------------------------------------------------\n*/\n\nelse if (session.stage === 'awaiting_timing') {\n  if (!originalText) {\n    replyText =\n      `Please send your preferred day and time.\\n\\n` +\n      `Example: Friday at 7 PM`;\n  }\n\n  else if (\n    explicitHandoff ||\n    (llmHandoff && !looksLikeTiming)\n  ) {\n    replyText = createHandoffReply(\n      explicitHandoff\n        ? 'Complaint, pricing, or human-support request'\n        : 'Off-script message detected by Groq'\n    );\n  }\n\n  else {\n    session.preferred_time = originalText;\n    session.stage = 'awaiting_slot';\n\n    replyText =\n      `Based on \"${originalText}\", these slots are available:\\n\\n` +\n      `1. 6:00 PM\\n` +\n      `2. 7:00 PM\\n` +\n      `3. 8:00 PM\\n\\n` +\n      `Reply with 1, 2, or 3.`;\n  }\n}\n\n/*\n|--------------------------------------------------------------------------\n| Slot selection\n|--------------------------------------------------------------------------\n*/\n\nelse if (session.stage === 'awaiting_slot') {\n  const slots = {\n    '1': '6:00 PM',\n    '2': '7:00 PM',\n    '3': '8:00 PM',\n    '6:00 pm': '6:00 PM',\n    '6 pm': '6:00 PM',\n    '7:00 pm': '7:00 PM',\n    '7 pm': '7:00 PM',\n    '8:00 pm': '8:00 PM',\n    '8 pm': '8:00 PM',\n  };\n\n  const selectedSlot = slots[text] || '';\n\n  if (selectedSlot) {\n    session.selected_slot = selectedSlot;\n    session.stage = 'awaiting_confirmation';\n\n    replyText =\n      `Please confirm your booking:\\n\\n` +\n      `Booking: ${session.booking_type}\\n` +\n      `Service: ${session.service}\\n` +\n      `Preferred timing: ${session.preferred_time}\\n` +\n      `Selected slot: ${session.selected_slot}\\n\\n` +\n      `Reply YES to confirm or NO to cancel.`;\n  }\n\n  else if (explicitHandoff || llmHandoff) {\n    replyText = createHandoffReply(\n      explicitHandoff\n        ? 'Complaint, pricing, or human-support request'\n        : 'Off-script message detected by Groq'\n    );\n  }\n\n  else {\n    replyText =\n      `Please choose one available slot:\\n\\n` +\n      `1. 6:00 PM\\n` +\n      `2. 7:00 PM\\n` +\n      `3. 8:00 PM`;\n  }\n}\n\n/*\n|--------------------------------------------------------------------------\n| Confirmation\n|--------------------------------------------------------------------------\n*/\n\nelse if (session.stage === 'awaiting_confirmation') {\n  if (['yes', 'y', 'confirm'].includes(text)) {\n    shouldLogBooking = true;\n    bookingId = `BK-${Date.now()}-${input.chat_id}`;\n    session.stage = 'confirmed';\n\n    replyText =\n      `Your booking has been confirmed.\\n\\n` +\n      `Booking: ${session.booking_type}\\n` +\n      `Service: ${session.service}\\n` +\n      `Preferred timing: ${session.preferred_time}\\n` +\n      `Selected slot: ${session.selected_slot}\\n\\n` +\n      `Thank you for using SlotWise.`;\n  }\n\n  else if (['no', 'n', 'cancel'].includes(text)) {\n    session = {\n      stage: 'awaiting_booking_type',\n      booking_type: '',\n      service: '',\n      preferred_time: '',\n      selected_slot: '',\n    };\n\n    replyText =\n      `Your booking has been cancelled.\\n\\n` +\n      `Send /start to make another booking.`;\n  }\n\n  else if (explicitHandoff || llmHandoff) {\n    replyText = createHandoffReply(\n      explicitHandoff\n        ? 'Complaint, pricing, or human-support request'\n        : 'Off-script message detected by Groq'\n    );\n  }\n\n  else {\n    replyText =\n      `Please reply YES to confirm or NO to cancel.`;\n  }\n}\n\n/*\n|--------------------------------------------------------------------------\n| Already confirmed\n|--------------------------------------------------------------------------\n*/\n\nelse if (session.stage === 'confirmed') {\n  if (explicitHandoff || llmHandoff) {\n    replyText = createHandoffReply(\n      explicitHandoff\n        ? 'Complaint, pricing, or human-support request'\n        : 'Off-script message detected by Groq'\n    );\n  }\n\n  else {\n    replyText =\n      `Your booking is already confirmed.\\n\\n` +\n      `Send /start to make another booking.`;\n  }\n}\n\n/*\n|--------------------------------------------------------------------------\n| Unknown state\n|--------------------------------------------------------------------------\n*/\n\nelse {\n  session = {\n    stage: 'awaiting_booking_type',\n    booking_type: '',\n    service: '',\n    preferred_time: '',\n    selected_slot: '',\n  };\n\n  replyText = mainMenu;\n}\n\nstore.slotwiseSessions[chatKey] = session;\n\nreturn [\n  {\n    json: {\n      ...input,\n\n      classifier_result: classifierResult,\n\n      stage: session.stage,\n      booking_type: session.booking_type,\n      service: session.service,\n      preferred_time: session.preferred_time,\n      selected_slot: session.selected_slot,\n\n      reply_text: replyText,\n\n      is_confirmed: session.stage === 'confirmed',\n\n      should_log_booking: shouldLogBooking,\n      booking_id: bookingId,\n\n      should_log_handoff: shouldLogHandoff,\n      handoff_id: handoffId,\n      handoff_reason: handoffReason,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        224
+      ],
+      "id": "35bd273d-a66e-42fa-b176-db9630319709",
+      "name": "Booking Conversation State"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You classify messages for a restaurant and parlour booking bot.\n\nReturn exactly one word only:\n\nBOOKING\nUse BOOKING when the message is part of the booking flow, including:\n/start, menu, numbers 1, 2 or 3, restaurant, table, parlour, salon,\nhaircut, facial, manicure, a day or time, yes, no, confirm or cancel.\n\nHANDOFF\nUse HANDOFF for complaints, pricing negotiation, refund requests,\nangry messages, requests to speak to a human, or unrelated/off-script messages.\n\nUser message:\n{{ $json.message_text }}",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        256,
+        -16
+      ],
+      "id": "32ae2700-09c7-4acb-9e24-b5c8f59b5037",
+      "name": "Classify Off-Script Message"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.1-8b-instant",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        112,
+        208
+      ],
+      "id": "3d2cfa46-5a8d-49e7-b3da-877b28610b3f",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "Cj7Jh5wIwSRWCd5g",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "4c8efd19-7554-4195-8180-a23c91e8d01b",
+              "leftValue": "={{ $json.should_log_booking }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        480,
+        240
+      ],
+      "id": "f4ddf7d2-65e3-4660-93bb-ed09df9cf188",
+      "name": "Should Log Booking?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLOTWISE_LOGGER_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  secret: $env.SLOTWISE_LOGGER_SECRET,\n  type: \"booking\",\n  booking_id: $json.booking_id,\n  created_at: $json.received_at,\n  chat_id: $json.chat_id,\n  user_id: $json.user_id,\n  username: $json.username,\n  first_name: $json.first_name,\n  booking_type: $json.booking_type,\n  service: $json.service,\n  preferred_time: $json.preferred_time,\n  selected_slot: $json.selected_slot,\n  status: \"Confirmed\"\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        672,
+        112
+      ],
+      "id": "175b420b-c934-448f-b870-e44926b1aca6",
+      "name": "Log Booking to Sheet",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f5237436-e12c-4c65-8c98-9b1cd86d3f02",
+              "leftValue": "={{ $json.should_log_handoff }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        672,
+        256
+      ],
+      "id": "a4c40d96-01e0-4447-b9ba-f216a7bd1c08",
+      "name": "Should Log Handoff?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLOTWISE_LOGGER_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  secret: $env.SLOTWISE_LOGGER_SECRET,\n  type: \"handoff\",\n  handoff_id: $json.handoff_id,\n  created_at: $json.received_at,\n  chat_id: $json.chat_id,\n  user_id: $json.user_id,\n  username: $json.username,\n  first_name: $json.first_name,\n  message_text: $json.message_text,\n  reason: $json.handoff_reason,\n  status: \"Pending\"\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        848,
+        288
+      ],
+      "id": "d78504d0-44d9-4952-8c68-b42d76d327d3",
+      "name": "HTTP Request",
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Telegram Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Telegram Input": {
+      "main": [
+        [
+          {
+            "node": "Classify Off-Script Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Booking Conversation State": {
+      "main": [
+        [
+          {
+            "node": "Should Log Booking?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Off-Script Message": {
+      "main": [
+        [
+          {
+            "node": "Booking Conversation State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classify Off-Script Message",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Log Booking?": {
+      "main": [
+        [
+          {
+            "node": "Log Booking to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Should Log Handoff?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Booking to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Log Handoff?": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "4779783b-4ea9-4f44-ae2c-d01f5bc19fa0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c058bd81ba03886f127053b13d1e0447dac2c96baaf36fc28dfc83ec5f6ff23a"
+  },
+  "id": "vOzO9yDSk1Z56Pvx",
+  "tags": []
+}
